@@ -1,0 +1,166 @@
+#!/bin/sh
+
+# Usage:
+# `$0`: Ask for recording type via dmenu
+# `$0 screencast`: Record both audio and screen
+# `$0 video`: Record only screen
+# `$0 audio`: Record only audio
+# `$0 kill`: Kill existing recording
+#
+# If there is already a running instance, user will be prompted to end it.
+
+getdim() { xrandr | sed -n "s/\s*\([0-9]\+x[0-9]\+\).*\*.*/\1/p" ;}
+
+HEADPHONES=53
+MICROPHONE=55
+STREAMINGKEY=""
+
+updateicon() { \
+	echo "$1" > /tmp/recordingicon
+	pkill -RTMIN+9 "${STATUSBAR:-dwmblocks}"
+}
+
+killrecording() {
+	recpid="$(cat /tmp/recordingpid)"
+	kill -15 "$recpid"
+	rm -f /tmp/recordingpid
+	updateicon ""
+	pkill -RTMIN+9 "${STATUSBAR:-dwmblocks}"
+}
+
+stream() { \
+	ffmpeg \
+	-threads 4 \
+	-vaapi_device /dev/dri/renderD129 \
+	-hwaccel vaapi \
+	-hwaccel_output_format vaapi \
+	-f pulse \
+	-thread_queue_size 1024 \
+	-ac 2 \
+	-i "$HEADPHONES" \
+	-c:a libopus \
+	-f x11grab \
+	-s "$(getdim)" \
+	-framerate 60 \
+	-i "$DISPLAY" \
+	-use_wallclock_as_timestamps 1 \
+	-vf 'format=nv12,hwupload' \
+	-c:v h264_vaapi \
+	-crf 0 -preset ultrafast \
+	-f flv "rtmp://diode.zone:1935/live/$STREAMINGKEY" &
+	echo $! > /tmp/recordingpid
+	updateicon "⏺️🎙️"
+}
+
+screencast() { \
+	ffmpeg -y \
+	-threads 4 \
+	-vaapi_device /dev/dri/renderD129 \
+	-hwaccel vaapi \
+	-hwaccel_output_format vaapi \
+	-f pulse \
+	-thread_queue_size 1024 \
+	-ac 2 \
+	-i "$HEADPHONES" \
+	-c:a libopus \
+	-f x11grab \
+	-s "$(getdim)" \
+	-framerate 60 \
+	-i "$DISPLAY" \
+	-r 24 \
+	-use_wallclock_as_timestamps 1 \
+	-vf 'format=nv12,hwupload' \
+	-c:v hevc_vaapi \
+	-crf 0 -preset ultrafast \
+	"$HOME/screencast-$(date '+%y%m%d-%H%M-%S').mkv" &
+	echo $! > /tmp/recordingpid
+	updateicon "⏺️🎙️"
+}
+
+video() { \
+	ffmpeg -y \
+	-threads 4 \
+	-vaapi_device /dev/dri/renderD129 \
+	-hwaccel vaapi \
+	-hwaccel_output_format vaapi \
+	-f x11grab \
+	-framerate 60 \
+	-s "$(getdim)" \
+	-i "$DISPLAY" \
+	-vf 'format=nv12,hwupload' \
+ 	-c:v hevc_vaapi -qp 0 -r 30 \
+	"$HOME/video-$(date '+%y%m%d-%H%M-%S').mkv" &
+	echo $! > /tmp/recordingpid
+	updateicon "⏺️"
+}
+
+videoselected()
+{
+	slop -f "%x %y %w %h" > /tmp/slop
+	read -r X Y W H < /tmp/slop
+	rm /tmp/slop
+
+	ffmpeg \
+	-threads 4 \
+	-vaapi_device /dev/dri/renderD129 \
+	-hwaccel vaapi \
+	-hwaccel_output_format vaapi \
+	-f x11grab \
+	-framerate 60 \
+	-video_size "$W"x"$H" \
+	-i :0.0+"$X,$Y" \
+	-vf 'format=nv12,hwupload' \
+ 	-c:v hevc_vaapi -qp 0 -r 30 \
+	"$HOME/box-$(date '+%y%m%d-%H%M-%S').mkv" &
+	echo $! > /tmp/recordingpid
+	updateicon "⏺️"
+}
+
+webcam() { \
+	ffmpeg -y \
+	-f v4l2 \
+	-threads 4 \
+	-i /dev/video0 \
+	-video_size 640x360 \
+	"$HOME/webcam-$(date '+%y%m%d-%H%M-%S').mkv" &
+	echo $! > /tmp/recordingpid
+	updateicon "🎥"
+}
+
+
+audio() { \
+	ffmpeg -y \
+	-threads 4 \
+	-f alsa -i "$MICROPHONE" \
+	-c:a libopus \
+	"$HOME/audio-$(date '+%y%m%d-%H%M-%S').opus" &
+	echo $! > /tmp/recordingpid
+	updateicon "🎙️"
+}
+
+askrecording() { \
+	choice=$(printf "stream\\nscreencast\\nvideo\\nvideo selected\\naudio\\nwebcam" | dmenu -i -p "Select recording style:")
+	case "$choice" in
+		stream) stream;;
+		screencast) screencast;;
+		audio) audio;;
+		video) video;;
+		*selected) videoselected;;
+		webcam) webcam;;
+	esac
+}
+
+asktoend() { \
+	response=$(printf "No\\nYes" | dmenu -i -p "Recording still active. End recording?") &&
+	[ "$response" = "Yes" ] &&  killrecording
+}
+
+case "$1" in
+	stream) stream;;
+	screencast) screencast;;
+	audio) audio;;
+	video) video;;
+	*selected) videoselected;;
+	kill) killrecording;;
+	*) ([ -f /tmp/recordingpid ] && asktoend && exit) || askrecording;;
+esac

@@ -1,3 +1,2 @@
-# rec
-
-Recording and streaming script using dmenu.
+# REC
+## Recording and streaming script using dmenu.
